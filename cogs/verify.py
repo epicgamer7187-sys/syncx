@@ -25,18 +25,16 @@ class Verify(commands.Cog):
         embed = brand(
             "**Authorize once. Get verified. Get added anywhere.**\n\n"
             "Click the button below and approve the request.\n"
-            "The link is **permanent** — unlimited members can use it.",
+            "The link is **permanent** - unlimited members can use it.",
             title="Verification",
         )
         embed.add_field(name="You will receive", value=role_text, inline=False)
-        embed.set_footer(text="Venice Member Bot • Secure OAuth2")
+        embed.set_footer(text="Venice Member Bot - Secure OAuth2")
 
         view = discord.ui.View()
-        view.add_item(
-            discord.ui.Button(label="Authorize", url=url, style=discord.ButtonStyle.link)
-        )
+        view.add_item(discord.ui.Button(label="Authorize", url=url, style=discord.ButtonStyle.link))
 
-        msg = await channel.send(embed=embed, view=view)
+        await channel.send(embed=embed, view=view)
         if channel.id != ctx.channel.id:
             await ctx.send(embed=ok(f"Verification panel sent to {channel.mention}."))
 
@@ -48,14 +46,11 @@ class Verify(commands.Cog):
         oauth = self.bot.get_cog("OAuth")
 
         rows = await self.bot.db.get_verified(ctx.guild.id)
-        checked = 0
-        valid = 0
-        invalid = 0
+        checked = valid = invalid = 0
 
         for row in rows:
             checked += 1
-            token = await oauth.get_valid_token(row["user_id"])
-            if token:
+            if await oauth.get_valid_token(row["user_id"]):
                 valid += 1
             else:
                 invalid += 1
