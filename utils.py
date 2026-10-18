@@ -1,4 +1,8 @@
+import logging
+
 import discord
+
+log = logging.getLogger("venice.utils")
 
 BRAND = 0x7C3AED
 SUCCESS = 0x10B981
@@ -57,18 +61,53 @@ async def respond(ctx, embed, ephemeral=True):
         pass
 
 
-async def add_member_to_guild(bot, guild, user_id, access_token):
-    """Add a user to a guild with their OAuth token.
+def _member_route(guild_id, user_id):
+    try:
+        from discord.http import Route
+    except ImportError:
+        from discord import Route
+    return Route(
+        "PUT",
+        "/guilds/{guild_id}/members/{user_id}",
+        guild_id=guild_id,
+        user_id=user_id,
+    )
 
-    Routes through the raw HTTP layer when Guild.add_member is unavailable,
-    which is the case on newer discord.py builds.
+
+_warned = False
+
+
+async def add_member_to_guild(bot, guild, user_id, access_token):
+    """Add a user to a guild using their OAuth2 token.
+
+    Tries, in order:
+      1. Guild.add_member          (older public helper)
+      2. Any named HTTPClient variant
+      3. Raw PUT via Route         (mirrors discord.py's own implementation)
     """
+    global _warned
+
     fn = getattr(guild, "add_member", None)
     if callable(fn):
         return await fn(discord.Object(id=user_id), access_token=access_token)
 
-    http_fn = getattr(bot.http, "add_member", None) or getattr(bot.http, "add_guild_member")
-    await http_fn(guild.id, user_id, access_token=access_token)
+    http = bot.http
+
+    for name in ("add_member", "add_guild_member", "guild_member_add"):
+        candidate = getattr(http, name, None)
+        if callable(candidate):
+            return await candidate(guild.id, user_id, access_token=access_token)
+
+    if not _warned:
+        _warned = True
+        log.warning(
+            "No named member-add helper found; using raw Route. "
+            "Guild.add_member=%s, HTTPClient member methods=%s",
+            hasattr(discord.Guild, "add_member"),
+            sorted(n for n in dir(http) if "member" in n.lower()),
+        )
+
+    await http.request(_member_route(guild.id, user_id), json={"access_token": access_token})
 
     try:
         return await guild.fetch_member(user_id)
