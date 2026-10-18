@@ -22,10 +22,8 @@ class Config:
     DB_PATH = os.getenv("DB_PATH", "data/bot.db")
     SUPPORT_SERVER = os.getenv("SUPPORT_SERVER", "")
 
-    # Defaults
     DEFAULT_NORMAL_LIMIT = 10
     MAX_QUEUE = 25
     COOLDOWN_SECONDS = 120
 
-    # Token endpoint
     DISCORD_API = "https://discord.com/api/v10"
