@@ -72,9 +72,9 @@ class VeniceBot(commands.Bot):
         log.info("Logged in as %s (%s)", self.user, self.user.id)
         await self.change_presence(
             activity=discord.Activity(
-                type=discord.ActivityType.watching, name=f"{Config.PREFIX}help"
+                type=discord.ActivityType.watching, name=f"{Config.PREFIX}help | Managing Users"
             ),
-            status=discord.Status.online,
+            status=discord.Status.dnd,
         )
 
     async def close(self):
