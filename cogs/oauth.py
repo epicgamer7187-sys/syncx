@@ -89,7 +89,7 @@ class OAuth(commands.Cog):
         embed = brand(
             f"**Status:** {status}\n\n"
             "Click the button below to authorize the bot to add you to servers.",
-            title="Authorization",
+            title="<:greenlink:1561396716157014046>Authorization",
         )
         view = discord.ui.View()
         view.add_item(discord.ui.Button(label="Authorize", url=url, style=discord.ButtonStyle.link))
