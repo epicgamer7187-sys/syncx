@@ -26,7 +26,7 @@ class Verify(commands.Cog):
             "**Authorize once. Get verified. Get added anywhere.**\n\n"
             "Click the button below and approve the request.\n"
             "The link is **permanent** - unlimited members can use it.",
-            title="Verification",
+            title="<:greenlink:1561396716157014046>Verification",
         )
         embed.add_field(name="You will receive", value=role_text, inline=False)
         embed.set_footer(text="Venice Member Bot - Secure OAuth2")
