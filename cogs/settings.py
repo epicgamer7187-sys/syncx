@@ -23,7 +23,7 @@ class Settings(commands.Cog):
                 "`set channel <#channel>` - restrict the add command\n"
                 "`set verifyrole <@role>` - role given on verification\n"
                 "`set maxqueue <amount>` - set the queue cap",
-                title="Configuration",
+                title="<a:setting:1561396721077190776>Configuration",
             )
         )
 
@@ -82,9 +82,9 @@ class Settings(commands.Cog):
         role_id = await self.bot.db.get_setting_int("verify_role", 0)
         role_limits = await self.bot.db.get_role_limits()
 
-        embed = info(title="Current Configuration")
-        embed.add_field(name="Normal limit", value=str(normal))
-        embed.add_field(name="Add channel", value=f"<#{channel_id}>" if channel_id else "Any")
+        embed = info(title="<a:setting:1561396721077190776>Current Configuration")
+        embed.add_field(name="Normal user limit", value=str(normal))
+        embed.add_field(name="Add user channel", value=f"<#{channel_id}>" if channel_id else "Any")
         embed.add_field(name="Verify role", value=f"<@&{role_id}>" if role_id else "Not set")
         embed.add_field(
             name="Role limits",
