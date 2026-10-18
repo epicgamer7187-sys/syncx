@@ -24,19 +24,19 @@ def _build(description=None, title=None, color=BRAND, footer=FOOTER):
     return e
 
 
-def ok(desc, title="Success"):
+def ok(desc=None, title="Success"):
     return _build(desc, title=title, color=SUCCESS)
 
 
-def err(desc, title="Error"):
+def err(desc=None, title="Error"):
     return _build(desc, title=title, color=ERROR)
 
 
-def info(desc, title=None):
+def info(desc=None, title=None):
     return _build(desc, title=title, color=INFO)
 
 
-def warn(desc, title="Notice"):
+def warn(desc=None, title="Notice"):
     return _build(desc, title=title, color=WARN)
 
 
