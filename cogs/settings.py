@@ -17,12 +17,12 @@ class Settings(commands.Cog):
     async def set_(self, ctx):
         await ctx.send(
             embed=info(
-                "`set limit <amount>` — default limit for normal users\n"
-                "`set rolelimit <role> <amount>` — limit for a role\n"
-                "`set removerolelimit <role>` — remove a role limit\n"
-                "`set channel <#channel>` — restrict the add command\n"
-                "`set verifyrole <@role>` — role given on verification\n"
-                "`set maxqueue <amount>` — set the queue cap",
+                "`set limit <amount>` - default limit for normal users\n"
+                "`set rolelimit <role> <amount>` - limit for a role\n"
+                "`set removerolelimit <role>` - remove a role limit\n"
+                "`set channel <#channel>` - restrict the add command\n"
+                "`set verifyrole <@role>` - role given on verification\n"
+                "`set maxqueue <amount>` - set the queue cap",
                 title="Configuration",
             )
         )
@@ -84,7 +84,7 @@ class Settings(commands.Cog):
         embed.add_field(name="Verify role", value=f"<@&{role_id}>" if role_id else "Not set")
         embed.add_field(
             name="Role limits",
-            value="\n".join(f"<@&{r}> → `{a}`" for r, a in role_limits.items()) or "None",
+            value="\n".join(f"<@&{r}> -> `{a}`" for r, a in role_limits.items()) or "None",
             inline=False,
         )
         await ctx.send(embed=embed)
