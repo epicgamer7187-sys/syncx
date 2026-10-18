@@ -23,7 +23,7 @@ class General(commands.Cog):
         embed = info(
             "Use **this** link to add the bot to a server.\n"
             "Use the `verify_panel` button for user authorization - they are different flows.",
-            title="Bot Invite",
+            title="<a:star:1561396726911340595>Bot Invite",
         )
         view = discord.ui.View()
         view.add_item(
