@@ -18,6 +18,9 @@ class OAuth(commands.Cog):
         if not row or not row["authorized"]:
             return None
 
+        if "guilds.join" not in (row["scope"] or ""):
+            return None
+
         if row["expires_at"] and row["expires_at"] - 120 > time.time():
             return row["access_token"]
 
@@ -59,26 +62,33 @@ class OAuth(commands.Cog):
             payload.get("refresh_token", refresh_token),
             expires_at,
             authorized=True,
+            scope=payload.get("scope"),
         )
         return payload["access_token"]
 
     async def is_authorized(self, user_id) -> bool:
         row = await self.bot.db.get_oauth(user_id)
-        return bool(row and row["authorized"])
+        if not row or not row["authorized"]:
+            return False
+        return "guilds.join" in (row["scope"] or "")
 
     @commands.hybrid_command(name="authorize", aliases=["auth"], description="Get your authorization link")
     async def authorize(self, ctx):
-        from web import oauth_url
         from utils import brand
+        from web import oauth_url
 
         guild_id = ctx.guild.id if ctx.guild else None
         url = oauth_url(guild_id, ctx.channel.id)
 
         row = await self.bot.db.get_oauth(ctx.author.id)
-        status = "Authorized" if (row and row["authorized"]) else "Not authorized"
+        if row and row["authorized"] and "guilds.join" in (row["scope"] or ""):
+            status = "Authorized"
+        else:
+            status = "Not authorized"
 
         embed = brand(
-            f"**Status:** {status}\n\nClick the button below to authorize the bot to add you to servers.",
+            f"**Status:** {status}\n\n"
+            "Click the button below to authorize the bot to add you to servers.",
             title="Authorization",
         )
         view = discord.ui.View()
