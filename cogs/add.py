@@ -73,7 +73,10 @@ class Add(commands.Cog):
     # ------------------------------------------------------------------
     # Commands
     # ------------------------------------------------------------------
-    @commands.hybrid_command(name="add", description="Add authorized members to a server")
+    @commands.hybrid_command(
+        name="add",
+        description="Add members to a server. Omit amount to add your full limit.",
+    )
     @commands.guild_only()
     async def add(self, ctx, server_id: str, amount: int = None):
         await ctx.defer()
@@ -122,15 +125,23 @@ class Add(commands.Cog):
         if target_guild is None:
             return await ctx.send(embed=err(f"I am not in the server `{target_id}`."))
 
+        # Resolve how many will actually be attempted
+        if left is None:
+            # owner / unlimited
+            planned = amount if amount else None
+            planned_text = "Unlimited" if planned is None else str(planned)
+        else:
+            planned = min(amount, left) if amount else left
+            planned_text = f"{planned} of {left} available"
+
         await self.bot.db.add_queue(ctx.author.id, ctx.guild.id, target_id, ctx.channel.id, amount)
         position = await self.bot.db.queue_position(ctx.author.id)
 
-        limit_text = "Unlimited" if left is None else str(left)
         await ctx.send(
             embed=info(
                 f"**Server:** `{target_guild.name}`\n"
                 f"**Position in queue:** `{position}`\n"
-                f"**Available to add:** `{limit_text}`",
+                f"**Will add up to:** `{planned_text}`",
                 title="Added to queue",
             )
         )
@@ -280,15 +291,18 @@ class Add(commands.Cog):
         usage = await self.bot.db.get_usage(user_id)
 
         if limit is None:
-            remaining = requested if requested else Config.MAX_QUEUE
+            remaining = None  # uncapped
         else:
             remaining = max(0, limit - usage["used"])
+            if remaining <= 0:
+                await notify(err("You have no members left in your current cycle."))
+                return
 
-        if remaining <= 0:
-            await notify(err("You have no members left in your current cycle."))
-            return
-
-        goal = min(requested if requested else remaining, remaining)
+        # goal: None means "until the pool is exhausted"
+        if requested:
+            goal = requested if remaining is None else min(requested, remaining)
+        else:
+            goal = remaining  # None for owner -> uncapped
 
         pool = await self.bot.db.get_authorized_users()
         added = 0
@@ -296,7 +310,7 @@ class Add(commands.Cog):
         failed = 0
 
         for candidate_id in pool:
-            if added >= goal:
+            if goal is not None and added >= goal:
                 break
 
             candidate_token = await oauth.get_valid_token(candidate_id)
