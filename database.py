@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS oauth_users (
     refresh_token TEXT,
     expires_at    INTEGER DEFAULT 0,
     authorized    INTEGER DEFAULT 1,
+    scope         TEXT DEFAULT '',
     created_at    INTEGER
 );
 
@@ -69,6 +70,14 @@ class Database:
         self.conn = await aiosqlite.connect(self.path)
         self.conn.row_factory = aiosqlite.Row
         await self.conn.executescript(SCHEMA)
+        await self._migrate()
+        await self.conn.commit()
+
+    async def _migrate(self):
+        cur = await self.conn.execute("PRAGMA table_info(oauth_users)")
+        columns = {row["name"] for row in await cur.fetchall()}
+        if "scope" not in columns:
+            await self.conn.execute("ALTER TABLE oauth_users ADD COLUMN scope TEXT DEFAULT ''")
         await self.conn.commit()
 
     async def close(self):
@@ -153,7 +162,9 @@ class Database:
         cur = await self.conn.execute("SELECT used, cooldown FROM usage WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
         if row is None:
-            await self.conn.execute("INSERT OR IGNORE INTO usage (user_id, used, cooldown) VALUES (?, 0, 0)", (user_id,))
+            await self.conn.execute(
+                "INSERT OR IGNORE INTO usage (user_id, used, cooldown) VALUES (?, 0, 0)", (user_id,)
+            )
             await self.conn.commit()
             return {"used": 0, "cooldown": 0}
         return {"used": row["used"], "cooldown": row["cooldown"]}
@@ -209,20 +220,23 @@ class Database:
         await self.conn.commit()
 
     # ---------------- oauth ----------------
-    async def save_oauth(self, user_id, username, access_token, refresh_token, expires_at, authorized=True):
+    async def save_oauth(self, user_id, username, access_token, refresh_token,
+                         expires_at, authorized=True, scope=None):
         existing = await self.get_oauth(user_id)
         if existing:
             username = username or existing["username"]
+            scope = scope if scope is not None else existing["scope"]
             await self.conn.execute(
-                "UPDATE oauth_users SET username=?, access_token=?, refresh_token=?, expires_at=?, authorized=? "
-                "WHERE user_id=?",
-                (username, access_token, refresh_token, expires_at, int(authorized), user_id),
+                "UPDATE oauth_users SET username=?, access_token=?, refresh_token=?, "
+                "expires_at=?, authorized=?, scope=? WHERE user_id=?",
+                (username, access_token, refresh_token, expires_at, int(authorized), scope, user_id),
             )
         else:
             await self.conn.execute(
-                "INSERT INTO oauth_users (user_id, username, access_token, refresh_token, expires_at, authorized, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (user_id, username, access_token, refresh_token, expires_at, int(authorized), int(time.time())),
+                "INSERT INTO oauth_users (user_id, username, access_token, refresh_token, "
+                "expires_at, authorized, scope, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, username, access_token, refresh_token, expires_at,
+                 int(authorized), scope or "", int(time.time())),
             )
         await self.conn.commit()
 
@@ -235,12 +249,21 @@ class Database:
         await self.conn.commit()
 
     async def get_authorized_users(self):
-        cur = await self.conn.execute("SELECT user_id FROM oauth_users WHERE authorized = 1 ORDER BY created_at ASC")
+        cur = await self.conn.execute(
+            "SELECT user_id FROM oauth_users WHERE authorized = 1 ORDER BY created_at ASC"
+        )
         return [r["user_id"] for r in await cur.fetchall()]
 
     async def count_authorized(self) -> int:
         cur = await self.conn.execute("SELECT COUNT(*) AS c FROM oauth_users WHERE authorized = 1")
         return (await cur.fetchone())["c"]
+
+    async def get_bad_scope_users(self):
+        cur = await self.conn.execute(
+            "SELECT user_id, username, scope FROM oauth_users "
+            "WHERE authorized = 1 AND (scope IS NULL OR scope NOT LIKE '%guilds.join%')"
+        )
+        return await cur.fetchall()
 
     # ---------------- verified ----------------
     async def add_verified(self, guild_id, user_id):
