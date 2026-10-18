@@ -9,6 +9,7 @@ import discord
 from aiohttp import web
 
 from config import Config
+from utils import add_member_to_guild
 
 log = logging.getLogger("venice.web")
 
@@ -86,6 +87,17 @@ def oauth_url(guild_id, channel_id=None):
     )
 
 
+def bot_invite_url():
+    params = {
+        "client_id": Config.CLIENT_ID,
+        "permissions": "3264244224",
+        "scope": "bot applications.commands",
+    }
+    return "https://discord.com/oauth2/authorize?" + urllib.parse.urlencode(
+        params, quote_via=urllib.parse.quote
+    )
+
+
 class WebServer:
     def __init__(self, bot):
         self.bot = bot
@@ -104,6 +116,20 @@ class WebServer:
     async def index(self, request):
         return web.Response(text="Venice Member Bot is running.", content_type="text/plain")
 
+    async def _fetch_user(self, session, access_token):
+        """Bot-scope installs return a bot token, which needs the Bot auth scheme."""
+        for scheme in ("Bearer", "Bot"):
+            try:
+                headers = {"Authorization": f"{scheme} {access_token}"}
+                async with session.get(ME_URL, headers=headers) as r:
+                    if r.status == 200:
+                        payload = await r.json(content_type=None)
+                        if isinstance(payload, dict) and "id" in payload:
+                            return payload, scheme
+            except aiohttp.ClientError:
+                continue
+        return None, None
+
     async def callback(self, request):
         query = request.query
         code = query.get("code")
@@ -116,9 +142,8 @@ class WebServer:
         if not code:
             return _error_page("No authorization code was returned.")
 
-        guild_id, channel_id = parse_state(state)
+        guild_id, _ = parse_state(state)
         if not guild_id:
-            # Discord's install-link flow passes guild_id directly and no state
             guild_id = query.get("guild_id")
         if not guild_id:
             guild_id = await self.bot.db.get_setting_int("verify_guild", 0) or None
@@ -132,19 +157,27 @@ class WebServer:
         }
 
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(TOKEN_URL, data=data) as r:
                     token = await r.json(content_type=None)
-                    if r.status != 200 or "access_token" not in token:
+                    if r.status != 200 or not isinstance(token, dict) or "access_token" not in token:
                         log.warning("Token exchange failed %s: %s", r.status, token)
                         return _error_page("Could not exchange the authorization code.")
 
-                headers = {"Authorization": f"Bearer {token['access_token']}"}
-                async with session.get(ME_URL, headers=headers) as r:
-                    user = await r.json(content_type=None)
-                    if r.status != 200 or "id" not in user:
-                        log.warning("User fetch failed %s: %s", r.status, user)
-                        return _error_page("Could not read your Discord profile.")
+                access_token = token["access_token"]
+                scope = str(token.get("scope", ""))
+
+                if "guilds.join" not in scope:
+                    log.warning("Bad scope %r - user used the portal invite link", scope)
+                    return _error_page(
+                        "Use the Authorize button inside the panel, not the bot invite link."
+                    )
+
+                user, scheme = await self._fetch_user(session, access_token)
+                if user is None:
+                    log.warning("Could not fetch user for scopes %r", scope)
+                    return _error_page("Could not read your Discord profile.")
         except aiohttp.ClientError as exc:
             log.exception("OAuth callback network error")
             return _error_page(f"Network error: {exc}")
@@ -152,9 +185,7 @@ class WebServer:
             log.exception("OAuth callback unexpected error")
             return _error_page()
 
-        scopes = str(token.get("scope", ""))
-        if "guilds.join" not in scopes:
-            log.warning("Token missing guilds.join scope. Got: %r", scopes)
+        log.info("Authorization: user=%s scheme=%s scopes=%r", user["id"], scheme, scope)
 
         expires_at = int(time.time()) + int(token.get("expires_in", 604800))
         user_id = int(user["id"])
@@ -162,14 +193,15 @@ class WebServer:
         await self.bot.db.save_oauth(
             user_id,
             user.get("username"),
-            token["access_token"],
+            access_token,
             token.get("refresh_token"),
             expires_at,
             authorized=True,
+            scope=scope,
         )
 
         if guild_id:
-            await self._finish_verification(int(guild_id), user_id, token["access_token"])
+            await self._finish_verification(int(guild_id), user_id, access_token)
 
         return web.Response(text=HTML_OK, content_type="text/html")
 
@@ -189,14 +221,11 @@ class WebServer:
         if member is None:
             if guild.me is None or not guild.me.guild_permissions.create_instant_invite:
                 log.warning("Missing Create Invite permission in guild %s", guild_id)
-                return
-            try:
-                member = await guild.add_member(
-                    discord.Object(id=user_id), access_token=access_token
-                )
-            except discord.HTTPException:
-                log.exception("Failed to add verified member to guild %s", guild_id)
-                return
+            else:
+                try:
+                    member = await add_member_to_guild(self.bot, guild, user_id, access_token)
+                except discord.HTTPException:
+                    log.exception("Failed to add verified member to guild %s", guild_id)
 
         role_id = await self.bot.db.get_setting_int("verify_role", 0)
         if role_id and member is not None:
