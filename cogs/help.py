@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 
 from config import Config
-from utils import brand, info
+from utils import brand
 
 USER_COMMANDS = [
     ("add <server_id> [amount]", "Queue authorized members to be added to a server."),
@@ -35,6 +35,21 @@ OWNER_COMMANDS = [
     ("resetuser <@user>", "Reset a user's usage and cooldown."),
 ]
 
+LIMIT = 1000  # leave headroom under the 1024 cap
+
+
+def _chunks(pairs):
+    out, current = [], ""
+    for name, desc in pairs:
+        line = f"`{name}` — {desc}\n"
+        if len(current) + len(line) > LIMIT:
+            out.append(current.rstrip())
+            current = ""
+        current += line
+    if current:
+        out.append(current.rstrip())
+    return out
+
 
 class Help(commands.Cog):
     """Dynamic help menu."""
@@ -52,18 +67,22 @@ class Help(commands.Cog):
         )
         embed.set_thumbnail(url=self.bot.user.display_avatar.url)
 
-        embed.add_field(
-            name="User Commands",
-            value="\n".join(f"`{name}` — {desc}" for name, desc in USER_COMMANDS),
-            inline=False,
-        )
-
-        if is_owner:
+        user_blocks = _chunks(USER_COMMANDS)
+        for i, block in enumerate(user_blocks):
             embed.add_field(
-                name="Owner Commands",
-                value="\n".join(f"`{name}` — {desc}" for name, desc in OWNER_COMMANDS),
+                name="User Commands" if i == 0 else "User Commands (cont.)",
+                value=block,
                 inline=False,
             )
+
+        if is_owner:
+            owner_blocks = _chunks(OWNER_COMMANDS)
+            for i, block in enumerate(owner_blocks):
+                embed.add_field(
+                    name="Owner Commands" if i == 0 else "Owner Commands (cont.)",
+                    value=block,
+                    inline=False,
+                )
 
         embed.set_footer(text="Venice Member Bot")
         await ctx.send(embed=embed)
