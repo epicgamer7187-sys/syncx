@@ -10,7 +10,9 @@ class Blacklist(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.hybrid_group(name="blacklist", aliases=["bl"], description="Manage blacklists", invoke_without_command=True)
+    @commands.hybrid_group(
+        name="blacklist", aliases=["bl"], description="Manage blacklists", invoke_without_command=True
+    )
     @commands.guild_only()
     @commands.is_owner()
     async def blacklist(self, ctx):
