@@ -63,6 +63,12 @@ class VeniceBot(commands.Bot):
             log.exception("Slash command sync failed")
 
     async def on_ready(self):
+        log.info(
+            "discord.py %s | Guild.add_member=%s | http.add_member=%s",
+            discord.__version__,
+            hasattr(discord.Guild, "add_member"),
+            hasattr(discord.http.HTTPClient, "add_member"),
+        )
         log.info("Logged in as %s (%s)", self.user, self.user.id)
         await self.change_presence(
             activity=discord.Activity(
