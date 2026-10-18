@@ -10,6 +10,7 @@ USER_COMMANDS = [
     ("queue", "View the current queue."),
     ("profile", "View your authorization and usage profile."),
     ("authorize", "Get your personal authorization link."),
+    ("invite", "Get the bot invite link."),
     ("ping", "Check the bot latency."),
 ]
 
@@ -30,18 +31,19 @@ OWNER_COMMANDS = [
     ("blacklist unuser <@user>", "Unblacklist a user."),
     ("blacklist list", "List all blacklisted servers and users."),
     ("authcount", "Show the total number of authorized users."),
+    ("recheck", "Find accounts missing the guilds.join scope."),
     ("synccmds", "Re-sync slash commands."),
     ("clearqueue", "Clear the queue."),
     ("resetuser <@user>", "Reset a user's usage and cooldown."),
 ]
 
-LIMIT = 1000  # leave headroom under the 1024 cap
+LIMIT = 1000
 
 
 def _chunks(pairs):
     out, current = [], ""
     for name, desc in pairs:
-        line = f"`{name}` — {desc}\n"
+        line = f"`{name}` - {desc}\n"
         if len(current) + len(line) > LIMIT:
             out.append(current.rstrip())
             current = ""
@@ -62,13 +64,12 @@ class Help(commands.Cog):
         is_owner = await self.bot.is_owner(ctx.author)
 
         embed = brand(
-            f"Prefix: `{Config.PREFIX}` • Slash commands work too.",
-            title="Venice Member Bot — Help",
+            f"Prefix: `{Config.PREFIX}` - Slash commands work too.",
+            title="Venice Member Bot - Help",
         )
         embed.set_thumbnail(url=self.bot.user.display_avatar.url)
 
-        user_blocks = _chunks(USER_COMMANDS)
-        for i, block in enumerate(user_blocks):
+        for i, block in enumerate(_chunks(USER_COMMANDS)):
             embed.add_field(
                 name="User Commands" if i == 0 else "User Commands (cont.)",
                 value=block,
@@ -76,15 +77,13 @@ class Help(commands.Cog):
             )
 
         if is_owner:
-            owner_blocks = _chunks(OWNER_COMMANDS)
-            for i, block in enumerate(owner_blocks):
+            for i, block in enumerate(_chunks(OWNER_COMMANDS)):
                 embed.add_field(
                     name="Owner Commands" if i == 0 else "Owner Commands (cont.)",
                     value=block,
                     inline=False,
                 )
 
-        embed.set_footer(text="Venice Member Bot")
         await ctx.send(embed=embed)
 
 
