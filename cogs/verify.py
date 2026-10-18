@@ -23,9 +23,9 @@ class Verify(commands.Cog):
         role_text = f"<@&{role_id}>" if role_id else "*not configured*"
 
         embed = brand(
-            "**Authorize once. Get verified. Get added anywhere.**\n\n"
+            "**Authorize once. Get verified. Get access to server.**\n\n"
             "Click the button below and approve the request.\n"
-            "The link is **permanent** - unlimited members can use it.",
+                        "### Click Link Below",
             title="<:greenlink:1561396716157014046>Verification",
         )
         embed.add_field(name="You will receive", value=role_text, inline=False)
@@ -61,7 +61,7 @@ class Verify(commands.Cog):
                 f"**Checked:** `{checked}`\n"
                 f"**Still authorized:** `{valid}`\n"
                 f"**No longer authorized:** `{invalid}`",
-                title="Resync Complete",
+                title="<a:success:1561396734137991360>Resync Complete",
             )
         )
 
