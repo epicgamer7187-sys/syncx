@@ -69,7 +69,11 @@ class Settings(commands.Cog):
         await self.bot.db.set_setting("max_queue", amount)
         await ctx.send(embed=ok(f"Queue cap set to `{amount}`."))
 
-    @commands.hybrid_command(name="settings", description="View the current configuration")
+    @commands.hybrid_command(
+        name="settings",
+        aliases=["setting", "config"],
+        description="View the current configuration",
+    )
     @commands.guild_only()
     @commands.is_owner()
     async def settings(self, ctx):
