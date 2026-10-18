@@ -10,7 +10,7 @@ ERROR = 0xEF4444
 WARN = 0xF59E0B
 INFO = 0x3B82F6
 
-FOOTER = "Venice Member Bot"
+FOOTER = "Team SyncX"
 
 
 def _build(description=None, title=None, color=BRAND, footer=FOOTER):
