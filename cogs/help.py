@@ -66,7 +66,7 @@ class Help(commands.Cog):
         embed = brand(
             f"Prefix: `{Config.PREFIX}` - Slash commands work too.\n"
             "`amount` is optional - omit it to add your full limit.",
-            title="Venice Member Bot - Help",
+            title="<a:error:1561396708443816099>SyncX Help Menu",
         )
         embed.set_thumbnail(url=self.bot.user.display_avatar.url)
 
