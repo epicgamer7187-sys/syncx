@@ -342,8 +342,8 @@ class Add(commands.Cog):
                 f"**Added:** `{added}`\n"
                 f"**Skipped (already present):** `{skipped}`\n"
                 f"**Failed:** `{failed}`\n"
-                f"**Restocked / remaining:** `{left_text}`\n"
-                f"**Next available:** {ts(now + Config.COOLDOWN_SECONDS)}",
+                f"**Restocked / Remaining:** `{left_text}`\n"
+                f"**Try Again After:** {ts(now + Config.COOLDOWN_SECONDS)}",
                 title="Members Added",
             )
         )
