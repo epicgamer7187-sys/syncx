@@ -44,12 +44,6 @@ def ts(seconds: int) -> str:
     return f"<t:{int(seconds)}:R>"
 
 
-def human_list(items, formatter, empty="None"):
-    if not items:
-        return empty
-    return "\n".join(formatter(i) for i in items)
-
-
 async def respond(ctx, embed, ephemeral=True):
     try:
         if ctx.interaction is not None:
@@ -61,3 +55,22 @@ async def respond(ctx, embed, ephemeral=True):
             await ctx.reply(embed=embed, mention_author=False)
     except discord.HTTPException:
         pass
+
+
+async def add_member_to_guild(bot, guild, user_id, access_token):
+    """Add a user to a guild with their OAuth token.
+
+    Routes through the raw HTTP layer when Guild.add_member is unavailable,
+    which is the case on newer discord.py builds.
+    """
+    fn = getattr(guild, "add_member", None)
+    if callable(fn):
+        return await fn(discord.Object(id=user_id), access_token=access_token)
+
+    http_fn = getattr(bot.http, "add_member", None) or getattr(bot.http, "add_guild_member")
+    await http_fn(guild.id, user_id, access_token=access_token)
+
+    try:
+        return await guild.fetch_member(user_id)
+    except discord.HTTPException:
+        return None
