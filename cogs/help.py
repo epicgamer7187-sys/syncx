@@ -5,7 +5,7 @@ from config import Config
 from utils import brand
 
 USER_COMMANDS = [
-    ("add <server_id> [amount]", "Queue authorized members to be added to a server."),
+    ("add <server_id> [amount]", "Add members. Omit amount to add your full limit."),
     ("limit", "Preview your remaining member limit."),
     ("queue", "View the current queue."),
     ("profile", "View your authorization and usage profile."),
@@ -64,7 +64,8 @@ class Help(commands.Cog):
         is_owner = await self.bot.is_owner(ctx.author)
 
         embed = brand(
-            f"Prefix: `{Config.PREFIX}` - Slash commands work too.",
+            f"Prefix: `{Config.PREFIX}` - Slash commands work too.\n"
+            "`amount` is optional - omit it to add your full limit.",
             title="Venice Member Bot - Help",
         )
         embed.set_thumbnail(url=self.bot.user.display_avatar.url)
