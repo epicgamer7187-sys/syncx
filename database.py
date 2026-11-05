@@ -1,67 +1,47 @@
+import json
 import os
 import time
+import uuid
 
 import aiosqlite
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS oauth_users (
-    user_id       INTEGER PRIMARY KEY,
-    username      TEXT,
-    access_token  TEXT,
-    refresh_token TEXT,
-    expires_at    INTEGER DEFAULT 0,
-    authorized    INTEGER DEFAULT 1,
-    scope         TEXT DEFAULT '',
-    created_at    INTEGER
+    user_id INTEGER PRIMARY KEY, username TEXT, access_token TEXT,
+    refresh_token TEXT, expires_at INTEGER DEFAULT 0,
+    authorized INTEGER DEFAULT 1, scope TEXT DEFAULT '', created_at INTEGER
 );
-
-CREATE TABLE IF NOT EXISTS settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT
-);
-
-CREATE TABLE IF NOT EXISTS role_limits (
-    role_id INTEGER PRIMARY KEY,
-    amount  INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS blacklist_servers (
-    server_id INTEGER PRIMARY KEY
-);
-
-CREATE TABLE IF NOT EXISTS blacklist_users (
-    user_id INTEGER PRIMARY KEY
-);
-
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS role_limits (role_id INTEGER PRIMARY KEY, amount INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS blacklist_servers (server_id INTEGER PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS blacklist_users (user_id INTEGER PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS usage (
-    user_id  INTEGER PRIMARY KEY,
-    used     INTEGER DEFAULT 0,
-    cooldown INTEGER DEFAULT 0
+    user_id INTEGER PRIMARY KEY, used INTEGER DEFAULT 0, cooldown INTEGER DEFAULT 0
 );
-
 CREATE TABLE IF NOT EXISTS queue (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id          INTEGER,
-    source_guild_id  INTEGER,
-    guild_id         INTEGER,
-    channel_id       INTEGER,
-    amount           INTEGER,
-    created_at       INTEGER
+    id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT UNIQUE, user_id INTEGER,
+    source_guild_id INTEGER, guild_id INTEGER, channel_id INTEGER,
+    amount INTEGER, created_at INTEGER
 );
-
 CREATE TABLE IF NOT EXISTS verified (
-    guild_id    INTEGER,
-    user_id     INTEGER,
-    verified_at INTEGER,
+    guild_id INTEGER, user_id INTEGER, verified_at INTEGER,
     PRIMARY KEY (guild_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS pulls (
+    user_id INTEGER, guild_id INTEGER, count INTEGER DEFAULT 0,
+    last_pull INTEGER DEFAULT 0, PRIMARY KEY (user_id, guild_id)
+);
+CREATE TABLE IF NOT EXISTS pending_ops (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, op TEXT,
+    payload TEXT, created_at INTEGER
 );
 """
 
 
-class Database:
-    def __init__(self, path: str):
+class SqliteBackend:
+    def __init__(self, path):
         self.path = path
-        self.conn: aiosqlite.Connection | None = None
+        self.conn = None
 
     async def connect(self):
         directory = os.path.dirname(self.path)
@@ -75,14 +55,37 @@ class Database:
 
     async def _migrate(self):
         cur = await self.conn.execute("PRAGMA table_info(oauth_users)")
-        columns = {row["name"] for row in await cur.fetchall()}
-        if "scope" not in columns:
+        cols = {r["name"] for r in await cur.fetchall()}
+        if "scope" not in cols:
             await self.conn.execute("ALTER TABLE oauth_users ADD COLUMN scope TEXT DEFAULT ''")
         await self.conn.commit()
 
     async def close(self):
         if self.conn:
             await self.conn.close()
+
+    # ---------------- journal ----------------
+    async def log_op(self, collection, op, payload):
+        await self.conn.execute(
+            "INSERT INTO pending_ops (collection, op, payload, created_at) VALUES (?, ?, ?, ?)",
+            (collection, op, json.dumps(payload), int(time.time())),
+        )
+        await self.conn.commit()
+
+    async def pending_ops(self):
+        cur = await self.conn.execute("SELECT * FROM pending_ops ORDER BY id ASC")
+        return await cur.fetchall()
+
+    async def pending_count(self):
+        cur = await self.conn.execute("SELECT COUNT(*) AS c FROM pending_ops")
+        return (await cur.fetchone())["c"]
+
+    async def clear_pending(self, ids):
+        if not ids:
+            return
+        marks = ",".join("?" * len(ids))
+        await self.conn.execute(f"DELETE FROM pending_ops WHERE id IN ({marks})", ids)
+        await self.conn.commit()
 
     # ---------------- settings ----------------
     async def get_setting(self, key, default=None):
@@ -93,30 +96,19 @@ class Database:
     async def set_setting(self, key, value):
         await self.conn.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, str(value)),
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(value))
         )
         await self.conn.commit()
 
-    async def get_setting_int(self, key, default=0):
-        value = await self.get_setting(key)
-        if value is None:
-            return default
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
     # ---------------- role limits ----------------
-    async def get_role_limits(self) -> dict:
+    async def get_role_limits(self):
         cur = await self.conn.execute("SELECT role_id, amount FROM role_limits")
         return {r["role_id"]: r["amount"] for r in await cur.fetchall()}
 
     async def set_role_limit(self, role_id, amount):
         await self.conn.execute(
             "INSERT INTO role_limits (role_id, amount) VALUES (?, ?) "
-            "ON CONFLICT(role_id) DO UPDATE SET amount = excluded.amount",
-            (role_id, amount),
+            "ON CONFLICT(role_id) DO UPDATE SET amount = excluded.amount", (role_id, amount)
         )
         await self.conn.commit()
 
@@ -124,33 +116,33 @@ class Database:
         await self.conn.execute("DELETE FROM role_limits WHERE role_id = ?", (role_id,))
         await self.conn.commit()
 
-    # ---------------- blacklist ----------------
-    async def add_blacklist_server(self, server_id):
-        await self.conn.execute("INSERT OR IGNORE INTO blacklist_servers VALUES (?)", (server_id,))
+    # ---------------- blacklists ----------------
+    async def add_blacklist_server(self, sid):
+        await self.conn.execute("INSERT OR IGNORE INTO blacklist_servers VALUES (?)", (sid,))
         await self.conn.commit()
 
-    async def remove_blacklist_server(self, server_id):
-        await self.conn.execute("DELETE FROM blacklist_servers WHERE server_id = ?", (server_id,))
+    async def remove_blacklist_server(self, sid):
+        await self.conn.execute("DELETE FROM blacklist_servers WHERE server_id = ?", (sid,))
         await self.conn.commit()
 
-    async def is_server_blacklisted(self, server_id) -> bool:
-        cur = await self.conn.execute("SELECT 1 FROM blacklist_servers WHERE server_id = ?", (server_id,))
+    async def is_server_blacklisted(self, sid):
+        cur = await self.conn.execute("SELECT 1 FROM blacklist_servers WHERE server_id = ?", (sid,))
         return await cur.fetchone() is not None
 
     async def list_blacklist_servers(self):
         cur = await self.conn.execute("SELECT server_id FROM blacklist_servers ORDER BY server_id")
         return [r["server_id"] for r in await cur.fetchall()]
 
-    async def add_blacklist_user(self, user_id):
-        await self.conn.execute("INSERT OR IGNORE INTO blacklist_users VALUES (?)", (user_id,))
+    async def add_blacklist_user(self, uid):
+        await self.conn.execute("INSERT OR IGNORE INTO blacklist_users VALUES (?)", (uid,))
         await self.conn.commit()
 
-    async def remove_blacklist_user(self, user_id):
-        await self.conn.execute("DELETE FROM blacklist_users WHERE user_id = ?", (user_id,))
+    async def remove_blacklist_user(self, uid):
+        await self.conn.execute("DELETE FROM blacklist_users WHERE user_id = ?", (uid,))
         await self.conn.commit()
 
-    async def is_user_blacklisted(self, user_id) -> bool:
-        cur = await self.conn.execute("SELECT 1 FROM blacklist_users WHERE user_id = ?", (user_id,))
+    async def is_user_blacklisted(self, uid):
+        cur = await self.conn.execute("SELECT 1 FROM blacklist_users WHERE user_id = ?", (uid,))
         return await cur.fetchone() is not None
 
     async def list_blacklist_users(self):
@@ -158,24 +150,26 @@ class Database:
         return [r["user_id"] for r in await cur.fetchall()]
 
     # ---------------- usage ----------------
-    async def get_usage(self, user_id):
-        cur = await self.conn.execute("SELECT used, cooldown FROM usage WHERE user_id = ?", (user_id,))
+    async def get_usage(self, uid):
+        cur = await self.conn.execute("SELECT used, cooldown FROM usage WHERE user_id = ?", (uid,))
         row = await cur.fetchone()
         if row is None:
             await self.conn.execute(
-                "INSERT OR IGNORE INTO usage (user_id, used, cooldown) VALUES (?, 0, 0)", (user_id,)
+                "INSERT OR IGNORE INTO usage (user_id, used, cooldown) VALUES (?, 0, 0)", (uid,)
             )
             await self.conn.commit()
             return {"used": 0, "cooldown": 0}
         return {"used": row["used"], "cooldown": row["cooldown"]}
 
-    async def set_usage(self, user_id, used=None, cooldown=None):
-        await self.get_usage(user_id)
-        if used is not None:
-            await self.conn.execute("UPDATE usage SET used = ? WHERE user_id = ?", (used, user_id))
-        if cooldown is not None:
-            await self.conn.execute("UPDATE usage SET cooldown = ? WHERE user_id = ?", (cooldown, user_id))
+    async def set_usage(self, uid, used=None, cooldown=None):
+        current = await self.get_usage(uid)
+        used = current["used"] if used is None else used
+        cooldown = current["cooldown"] if cooldown is None else cooldown
+        await self.conn.execute(
+            "UPDATE usage SET used = ?, cooldown = ? WHERE user_id = ?", (used, cooldown, uid)
+        )
         await self.conn.commit()
+        return {"used": used, "cooldown": cooldown}
 
     async def get_expired_cooldowns(self, now):
         cur = await self.conn.execute(
@@ -184,31 +178,32 @@ class Database:
         return [r["user_id"] for r in await cur.fetchall()]
 
     # ---------------- queue ----------------
-    async def queue_size(self) -> int:
+    async def queue_size(self):
         cur = await self.conn.execute("SELECT COUNT(*) AS c FROM queue")
         return (await cur.fetchone())["c"]
 
-    async def add_queue(self, user_id, source_guild_id, guild_id, channel_id, amount):
+    async def add_queue(self, uid, sgid, gid, cid, amount):
+        key = uuid.uuid4().hex
         await self.conn.execute(
-            "INSERT INTO queue (user_id, source_guild_id, guild_id, channel_id, amount, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, source_guild_id, guild_id, channel_id, amount, int(time.time())),
+            "INSERT INTO queue (key, user_id, source_guild_id, guild_id, channel_id, amount, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)", (key, uid, sgid, gid, cid, amount, int(time.time()))
         )
         await self.conn.commit()
+        cur = await self.conn.execute("SELECT * FROM queue WHERE key = ?", (key,))
+        return await cur.fetchone()
 
     async def queue_list(self):
-        cur = await self.conn.execute("SELECT * FROM queue ORDER BY id ASC")
+        cur = await self.conn.execute("SELECT * FROM queue ORDER BY created_at ASC, id ASC")
         return await cur.fetchall()
 
-    async def queue_position(self, user_id) -> int:
-        rows = await self.queue_list()
-        for i, row in enumerate(rows, start=1):
-            if row["user_id"] == user_id:
+    async def queue_position(self, uid):
+        for i, row in enumerate(await self.queue_list(), start=1):
+            if row["user_id"] == uid:
                 return i
         return 0
 
     async def pop_queue(self):
-        cur = await self.conn.execute("SELECT * FROM queue ORDER BY id ASC LIMIT 1")
+        cur = await self.conn.execute("SELECT * FROM queue ORDER BY created_at ASC, id ASC LIMIT 1")
         row = await cur.fetchone()
         if row:
             await self.conn.execute("DELETE FROM queue WHERE id = ?", (row["id"],))
@@ -220,32 +215,30 @@ class Database:
         await self.conn.commit()
 
     # ---------------- oauth ----------------
-    async def save_oauth(self, user_id, username, access_token, refresh_token,
-                         expires_at, authorized=True, scope=None):
-        existing = await self.get_oauth(user_id)
+    async def save_oauth(self, uid, username, access, refresh, expires, authorized=True, scope=None):
+        existing = await self.get_oauth(uid)
         if existing:
             username = username or existing["username"]
-            scope = scope if scope is not None else existing["scope"]
+            scope = existing["scope"] if scope is None else scope
             await self.conn.execute(
                 "UPDATE oauth_users SET username=?, access_token=?, refresh_token=?, "
                 "expires_at=?, authorized=?, scope=? WHERE user_id=?",
-                (username, access_token, refresh_token, expires_at, int(authorized), scope, user_id),
+                (username, access, refresh, expires, int(authorized), scope, uid),
             )
         else:
             await self.conn.execute(
                 "INSERT INTO oauth_users (user_id, username, access_token, refresh_token, "
                 "expires_at, authorized, scope, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (user_id, username, access_token, refresh_token, expires_at,
-                 int(authorized), scope or "", int(time.time())),
+                (uid, username, access, refresh, expires, int(authorized), scope or "", int(time.time())),
             )
         await self.conn.commit()
 
-    async def get_oauth(self, user_id):
-        cur = await self.conn.execute("SELECT * FROM oauth_users WHERE user_id = ?", (user_id,))
+    async def get_oauth(self, uid):
+        cur = await self.conn.execute("SELECT * FROM oauth_users WHERE user_id = ?", (uid,))
         return await cur.fetchone()
 
-    async def set_authorized(self, user_id, state: bool):
-        await self.conn.execute("UPDATE oauth_users SET authorized = ? WHERE user_id = ?", (int(state), user_id))
+    async def set_authorized(self, uid, state):
+        await self.conn.execute("UPDATE oauth_users SET authorized = ? WHERE user_id = ?", (int(state), uid))
         await self.conn.commit()
 
     async def get_authorized_users(self):
@@ -254,7 +247,7 @@ class Database:
         )
         return [r["user_id"] for r in await cur.fetchall()]
 
-    async def count_authorized(self) -> int:
+    async def count_authorized(self):
         cur = await self.conn.execute("SELECT COUNT(*) AS c FROM oauth_users WHERE authorized = 1")
         return (await cur.fetchone())["c"]
 
@@ -266,20 +259,47 @@ class Database:
         return await cur.fetchall()
 
     # ---------------- verified ----------------
-    async def add_verified(self, guild_id, user_id):
+    async def add_verified(self, gid, uid):
         await self.conn.execute(
             "INSERT OR REPLACE INTO verified (guild_id, user_id, verified_at) VALUES (?, ?, ?)",
-            (guild_id, user_id, int(time.time())),
+            (gid, uid, int(time.time())),
         )
         await self.conn.commit()
 
-    async def remove_verified(self, guild_id, user_id):
-        await self.conn.execute("DELETE FROM verified WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+    async def remove_verified(self, gid, uid):
+        await self.conn.execute("DELETE FROM verified WHERE guild_id = ? AND user_id = ?", (gid, uid))
         await self.conn.commit()
 
-    async def get_verified(self, guild_id=None):
-        if guild_id is None:
+    async def get_verified(self, gid=None):
+        if gid is None:
             cur = await self.conn.execute("SELECT * FROM verified")
         else:
-            cur = await self.conn.execute("SELECT * FROM verified WHERE guild_id = ?", (guild_id,))
+            cur = await self.conn.execute("SELECT * FROM verified WHERE guild_id = ?", (gid,))
+        return await cur.fetchall()
+
+    # ---------------- pulls ----------------
+    async def record_pull(self, uid, gid):
+        now = int(time.time())
+        await self.conn.execute(
+            "INSERT INTO pulls (user_id, guild_id, count, last_pull) VALUES (?, ?, 1, ?) "
+            "ON CONFLICT(user_id, guild_id) DO UPDATE SET count = count + 1, last_pull = excluded.last_pull",
+            (uid, gid, now),
+        )
+        await self.conn.commit()
+        return await self.get_pull(uid, gid)
+
+    async def get_pull(self, uid, gid):
+        cur = await self.conn.execute(
+            "SELECT * FROM pulls WHERE user_id = ? AND guild_id = ?", (uid, gid)
+        )
+        return await cur.fetchone()
+
+    async def reset_pull(self, uid, gid):
+        await self.conn.execute("DELETE FROM pulls WHERE user_id = ? AND guild_id = ?", (uid, gid))
+        await self.conn.commit()
+
+    async def list_pulls(self, limit=20):
+        cur = await self.conn.execute(
+            "SELECT * FROM pulls ORDER BY last_pull DESC LIMIT ?", (limit,)
+        )
         return await cur.fetchall()
