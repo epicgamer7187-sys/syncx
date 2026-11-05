@@ -12,8 +12,6 @@ log = logging.getLogger("venice.add")
 
 
 class Add(commands.Cog):
-    """Member adding system with FIFO queue."""
-
     def __init__(self, bot):
         self.bot = bot
         self._worker = None
@@ -28,25 +26,22 @@ class Add(commands.Cog):
             if task:
                 task.cancel()
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+    # ---------------- config helpers ----------------
+    async def cfg(self, key, default):
+        return await self.bot.db.get_setting_int(key, default)
+
     async def user_limit(self, guild, user_id):
-        """Returns None for unlimited (owner)."""
         if await self.bot.is_owner(discord.Object(id=user_id)):
             return None
-
-        base = await self.bot.db.get_setting_int("normal_limit", Config.DEFAULT_NORMAL_LIMIT)
+        base = await self.cfg("normal_limit", Config.DEFAULT_NORMAL_LIMIT)
         if guild is None:
             return base
-
         member = guild.get_member(user_id)
         if member is None:
             try:
                 member = await guild.fetch_member(user_id)
             except discord.HTTPException:
                 return base
-
         best = None
         for role_id, amount in (await self.bot.db.get_role_limits()).items():
             if member.get_role(role_id) is not None:
@@ -70,34 +65,32 @@ class Add(commands.Cog):
         except discord.HTTPException:
             return None
 
-    # ------------------------------------------------------------------
-    # Commands
-    # ------------------------------------------------------------------
+    # ---------------- commands ----------------
     @commands.hybrid_command(
-        name="add",
-        description="Add members to a server. Omit amount to add your full limit.",
+        name="add", description="Add members to a server. Omit amount to add your full limit."
     )
     @commands.guild_only()
     async def add(self, ctx, server_id: str, amount: int = None):
         await ctx.defer()
 
-        channel_id = await self.bot.db.get_setting_int("add_channel", 0)
+        if await self.cfg("maintenance", 0):
+            return await ctx.send(embed=warn("The bot is in maintenance mode. Try again soon."))
+
+        channel_id = await self.cfg("add_channel", 0)
         if channel_id and ctx.channel.id != channel_id:
             return await ctx.send(embed=err(f"Please use this command in <#{channel_id}>."))
 
         try:
             target_id = int(server_id.strip())
         except ValueError:
-            return await ctx.send(embed=err("`server_id` must be a numeric server ID."))
+            return await ctx.send(embed=err("`server_id` must be numeric."))
 
         if amount is not None and amount <= 0:
             return await ctx.send(embed=err("`amount` must be greater than 0."))
 
         oauth = self.bot.get_cog("OAuth")
         if not await oauth.is_authorized(ctx.author.id):
-            return await ctx.send(
-                embed=err("You are not authorized. Run `authorize` and complete the OAuth flow.")
-            )
+            return await ctx.send(embed=err("You are not authorized. Run `authorize` first."))
 
         if await self.bot.db.is_server_blacklisted(target_id):
             return await ctx.send(embed=err(f"Server `{target_id}` is blacklisted."))
@@ -105,36 +98,58 @@ class Add(commands.Cog):
         if await self.bot.db.is_user_blacklisted(ctx.author.id):
             return await ctx.send(embed=err("You are blacklisted from adding members."))
 
-        if await self.bot.db.queue_size() >= Config.MAX_QUEUE:
-            return await ctx.send(
-                embed=warn(f"The queue is full ({Config.MAX_QUEUE} entries). Try again shortly.")
-            )
+        max_queue = await self.cfg("max_queue", Config.DEFAULT_MAX_QUEUE)
+        if await self.bot.db.queue_size() >= max_queue:
+            return await ctx.send(embed=warn(f"Queue is full ({max_queue}). Try again shortly."))
 
-        usage = await self.bot.db.get_usage(ctx.author.id)
         now = int(time.time())
+        usage = await self.bot.db.get_usage(ctx.author.id)
         if usage["cooldown"] > now:
-            return await ctx.send(
-                embed=warn(f"You are on cooldown. Try again {ts(usage['cooldown'])}.")
-            )
+            return await ctx.send(embed=warn(f"Cooldown active. Try again {ts(usage['cooldown'])}."))
 
         left = await self.remaining(ctx.guild, ctx.author.id)
         if left is not None and left <= 0:
-            return await ctx.send(embed=err("You have no members left in your current cycle."))
+            return await ctx.send(embed=err("No members left in your current cycle."))
 
         target_guild = self.bot.get_guild(target_id)
         if target_guild is None:
             return await ctx.send(embed=err(f"I am not in the server `{target_id}`."))
 
-        # Resolve how many will actually be attempted
+        # ---- same-server repeat guard ----
+        repeat_limit = await self.cfg("repeat_limit", Config.DEFAULT_REPEAT_LIMIT)
+        same_cd = await self.cfg("same_guild_cooldown", Config.DEFAULT_SAME_GUILD_COOLDOWN)
+        pull = await self.bot.db.get_pull(ctx.author.id, target_id)
+
+        if pull:
+            ready_at = pull["last_pull"] + same_cd
+            if ready_at > now:
+                return await ctx.send(
+                    embed=warn(
+                        f"You already pulled to this server. Try again {ts(ready_at)}.",
+                        title="Same Server",
+                    )
+                )
+            if repeat_limit and pull["count"] >= repeat_limit:
+                await self.bot.db.add_blacklist_user(ctx.author.id)
+                await self.bot.db.add_blacklist_server(target_id)
+                return await ctx.send(
+                    embed=err(
+                        f"You hit the repeat limit (`{repeat_limit}`) on `{target_guild.name}`.\n"
+                        "Both you and the server have been **blacklisted**.",
+                        title="Repeat Limit",
+                    )
+                )
+
+        # ---- queue ----
         if left is None:
-            # owner / unlimited
-            planned = amount if amount else None
+            planned = amount
             planned_text = "Unlimited" if planned is None else str(planned)
         else:
             planned = min(amount, left) if amount else left
             planned_text = f"{planned} of {left} available"
 
         await self.bot.db.add_queue(ctx.author.id, ctx.guild.id, target_id, ctx.channel.id, amount)
+        await self.bot.db.record_pull(ctx.author.id, target_id)
         position = await self.bot.db.queue_position(ctx.author.id)
 
         await ctx.send(
@@ -142,55 +157,57 @@ class Add(commands.Cog):
                 f"**Server:** `{target_guild.name}`\n"
                 f"**Position in queue:** `{position}`\n"
                 f"**Will add up to:** `{planned_text}`",
-                title="Added to queue",
+                title="Queued",
             )
         )
 
-    @commands.hybrid_command(
-        name="limit", aliases=["limits", "remaining"], description="Preview your remaining limit"
-    )
+    @commands.hybrid_command(name="limit", aliases=["limits", "remaining"])
     @commands.guild_only()
     async def limit(self, ctx):
         limit = await self.user_limit(ctx.guild, ctx.author.id)
         usage = await self.bot.db.get_usage(ctx.author.id)
-
         if limit is None:
             embed = info("You have **unlimited** member additions.", title="Limit Preview")
         else:
             left = max(0, limit - usage["used"])
             embed = info(
-                f"**Total limit:** `{limit}`\n"
-                f"**Used:** `{usage['used']}`\n"
-                f"**Restocked / remaining:** `{left}`",
-                title="Limit Preview",
+                f"**Total limit:** `{limit}`\n**Used:** `{usage['used']}`\n"
+                f"**Remaining:** `{left}`", title="Limit Preview",
             )
-
         if usage["cooldown"] > int(time.time()):
             embed.add_field(name="Cooldown", value=ts(usage["cooldown"]), inline=False)
-
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="queue", description="View the current queue")
+    @commands.hybrid_command(name="pulls", aliases=["history"], description="Your recent pulls")
+    @commands.guild_only()
+    async def pulls(self, ctx):
+        rows = await self.bot.db.list_pulls(50)
+        mine = [r for r in rows if r["user_id"] == ctx.author.id]
+        if not mine:
+            return await ctx.send(embed=info("You have no pull history."))
+        lines = [
+            f"`{r['guild_id']}` - {r['count']}x - {ts(r['last_pull'])}" for r in mine[:15]
+        ]
+        await ctx.send(embed=info("\n".join(lines), title="Your Pulls"))
+
+    @commands.hybrid_command(name="queue")
     async def queue(self, ctx):
         rows = await self.bot.db.queue_list()
         if not rows:
-            return await ctx.send(embed=info("The queue is empty."))
-
+            return await ctx.send(embed=info("Queue is empty."))
         lines = [
-            f"`#{i}` <@{row['user_id']}> -> `{row['guild_id']}`"
-            for i, row in enumerate(rows[:25], start=1)
+            f"`#{i}` <@{r['user_id']}> -> `{r['guild_id']}`"
+            for i, r in enumerate(rows[:25], start=1)
         ]
-        await ctx.send(embed=info("\n".join(lines), title=f"Queue ({len(rows)}/{Config.MAX_QUEUE})"))
+        await ctx.send(embed=info("\n".join(lines), title=f"Queue ({len(rows)})"))
 
-    @commands.hybrid_command(name="profile", description="View your profile")
+    @commands.hybrid_command(name="profile")
     @commands.guild_only()
     async def profile(self, ctx):
         limit = await self.user_limit(ctx.guild, ctx.author.id)
         usage = await self.bot.db.get_usage(ctx.author.id)
-        oauth = self.bot.get_cog("OAuth")
-        authorized = await oauth.is_authorized(ctx.author.id)
-
-        embed = info(title=f"{ctx.author.display_name}'s Profile")
+        authorized = await self.bot.get_cog("OAuth").is_authorized(ctx.author.id)
+        embed = info(title=f"{ctx.author.display_name}")
         embed.set_thumbnail(url=ctx.author.display_avatar.url)
         embed.add_field(name="Authorized", value="Yes" if authorized else "No")
         embed.add_field(name="Limit", value="Unlimited" if limit is None else str(limit))
@@ -199,32 +216,30 @@ class Add(commands.Cog):
             embed.add_field(name="Remaining", value=str(max(0, limit - usage["used"])))
         await ctx.send(embed=embed)
 
-    # ------------------------------------------------------------------
-    # Workers
-    # ------------------------------------------------------------------
+    # ---------------- workers ----------------
     async def worker_loop(self):
         await self.bot.wait_until_ready()
         while True:
             try:
+                if await self.cfg("maintenance", 0):
+                    await asyncio.sleep(3)
+                    continue
                 entry = await self.bot.db.pop_queue()
                 if entry:
                     try:
                         await self.process(entry)
                     except Exception:
-                        log.exception("process() failed, requeueing entry %s", entry["id"])
+                        log.exception("process() failed, requeueing %s", entry.get("key"))
                         await self.bot.db.add_queue(
-                            entry["user_id"],
-                            entry["source_guild_id"],
-                            entry["guild_id"],
-                            entry["channel_id"],
-                            entry["amount"],
+                            entry["user_id"], entry["source_guild_id"],
+                            entry["guild_id"], entry["channel_id"], entry["amount"],
                         )
                 else:
                     await asyncio.sleep(2)
             except asyncio.CancelledError:
                 break
             except Exception:
-                log.exception("Queue worker error")
+                log.exception("Worker error")
                 await asyncio.sleep(3)
 
     async def restock_loop(self):
@@ -238,11 +253,11 @@ class Add(commands.Cog):
             except asyncio.CancelledError:
                 break
             except Exception:
-                log.exception("Restock loop error")
+                log.exception("Restock error")
             await asyncio.sleep(10)
 
     async def notify_restock(self, user_id):
-        channel_id = await self.bot.db.get_setting_int("add_channel", 0)
+        channel_id = await self.cfg("add_channel", 0)
         if not channel_id:
             return
         channel = self.bot.get_channel(channel_id)
@@ -251,7 +266,7 @@ class Add(commands.Cog):
         try:
             await channel.send(
                 content=f"<@{user_id}>",
-                embed=ok("Your members have been **restocked**. You can add again."),
+                embed=ok("Your members have been **restocked**."),
             )
         except discord.HTTPException:
             pass
@@ -275,75 +290,57 @@ class Add(commands.Cog):
                     pass
 
         if target is None:
-            await notify(err(f"I am not in the server `{guild_id}`."))
-            return
-
+            return await notify(err(f"I am not in `{guild_id}`."))
         if target.me is None or not target.me.guild_permissions.create_instant_invite:
-            await notify(err(f"I need **Create Invite** permission in `{target.name}`."))
-            return
+            return await notify(err(f"I need **Create Invite** in `{target.name}`."))
 
         oauth = self.bot.get_cog("OAuth")
         if not await oauth.get_valid_token(user_id):
-            await notify(err("You are no longer authorized. Please re-authorize."))
-            return
+            return await notify(err("You are no longer authorized."))
 
         limit = await self.user_limit(source, user_id)
         usage = await self.bot.db.get_usage(user_id)
 
         if limit is None:
-            remaining = None  # uncapped
+            remaining = None
         else:
             remaining = max(0, limit - usage["used"])
             if remaining <= 0:
-                await notify(err("You have no members left in your current cycle."))
-                return
+                return await notify(err("No members left in your cycle."))
 
-        # goal: None means "until the pool is exhausted"
-        if requested:
-            goal = requested if remaining is None else min(requested, remaining)
-        else:
-            goal = remaining  # None for owner -> uncapped
+        goal = (requested if remaining is None else min(requested, remaining)) if requested else remaining
 
         pool = await self.bot.db.get_authorized_users()
-        added = 0
-        skipped = 0
-        failed = 0
+        added = skipped = failed = 0
 
         for candidate_id in pool:
             if goal is not None and added >= goal:
                 break
-
-            candidate_token = await oauth.get_valid_token(candidate_id)
-            if not candidate_token:
+            token = await oauth.get_valid_token(candidate_id)
+            if not token:
                 continue
-
             if await self.member_in_guild(target, candidate_id) is not None:
                 skipped += 1
                 continue
-
             try:
-                await add_member_to_guild(self.bot, target, candidate_id, candidate_token)
+                await add_member_to_guild(self.bot, target, candidate_id, token)
                 added += 1
             except discord.HTTPException as exc:
                 failed += 1
-                log.warning("Failed to add %s to %s: %s", candidate_id, target.id, exc)
-
+                log.warning("Add %s -> %s failed: %s", candidate_id, target.id, exc)
             await asyncio.sleep(0.5)
 
         now = int(time.time())
+        cooldown = await self.cfg("cooldown", Config.DEFAULT_COOLDOWN)
         new_used = usage["used"] + added
-        await self.bot.db.set_usage(user_id, used=new_used, cooldown=now + Config.COOLDOWN_SECONDS)
+        await self.bot.db.set_usage(user_id, used=new_used, cooldown=now + cooldown)
 
         left_text = "Unlimited" if limit is None else str(max(0, limit - new_used))
-
         await notify(
             ok(
-                f"**Server:** `{target.name}`\n"
-                f"**Added:** `{added}`\n"
-                f"**Skipped (already present):** `{skipped}`\n"
-                f"**Failed:** `{failed}`\n"
-                f"**Restocked / Remaining:** `{left_text}`\n"
-                f"**Try Again After:** {ts(now + Config.COOLDOWN_SECONDS)}",
+                f"**Server:** `{target.name}`\n**Added:** `{added}`\n"
+                f"**Skipped:** `{skipped}`\n**Failed:** `{failed}`\n"
+                f"**Remaining:** `{left_text}`\n**Next:** {ts(now + cooldown)}",
                 title="Members Added",
             )
         )
