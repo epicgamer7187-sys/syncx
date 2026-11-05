@@ -5,7 +5,8 @@ import discord
 from discord.ext import commands
 
 from config import Config
-from database import Database
+from store import Store
+from utils import err
 from web import WebServer
 
 logging.basicConfig(
@@ -41,7 +42,7 @@ class VeniceBot(commands.Bot):
             strip_after_prefix=True,
             allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True),
         )
-        self.db = Database(Config.DB_PATH)
+        self.db = Store(Config.DB_PATH, Config.MONGO_URI or None, Config.MONGO_DB)
         self.web = WebServer(self)
 
     async def setup_hook(self):
@@ -55,6 +56,7 @@ class VeniceBot(commands.Bot):
                 log.exception("Failed to load %s", cog)
 
         await self.web.start()
+        self.tree.on_error = self.on_app_command_error
 
         try:
             synced = await self.tree.sync()
@@ -63,19 +65,43 @@ class VeniceBot(commands.Bot):
             log.exception("Slash command sync failed")
 
     async def on_ready(self):
-        log.info(
-            "discord.py %s | Guild.add_member=%s | http.add_member=%s",
-            discord.__version__,
-            hasattr(discord.Guild, "add_member"),
-            hasattr(discord.http.HTTPClient, "add_member"),
-        )
+        log.info("Store mode: %s", "MongoDB" if self.db.online else "SQLite fallback")
         log.info("Logged in as %s (%s)", self.user, self.user.id)
         await self.change_presence(
             activity=discord.Activity(
-                type=discord.ActivityType.watching, name=f"{Config.PREFIX}help | Managing Users"
+                type=discord.ActivityType.watching, name=f"{Config.PREFIX}help"
             ),
-            status=discord.Status.dnd,
+            status=discord.Status.online,
         )
+
+    async def on_command_error(self, ctx, error):
+        if isinstance(error, commands.CommandNotFound):
+            return
+        if isinstance(error, commands.CheckFailure):
+            return await ctx.send(embed=err("You do not have permission to use this command."))
+        if isinstance(error, commands.MissingRequiredArgument):
+            return await ctx.send(
+                embed=err(f"Missing argument: `{error.param.name}`.\nTry `{Config.PREFIX}help`.")
+            )
+        if isinstance(error, commands.BadArgument):
+            return await ctx.send(embed=err(f"Invalid argument: {error}"))
+        log.exception("Command error in %s", getattr(ctx.command, "name", "?"), exc_info=error)
+        try:
+            await ctx.send(embed=err(f"`{type(error).__name__}`: {error}"))
+        except discord.HTTPException:
+            pass
+
+    async def on_app_command_error(self, interaction, error):
+        if isinstance(error, discord.app_commands.CommandInvokeError):
+            error = error.original
+        try:
+            msg = err(f"`{type(error).__name__}`: {error}")
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
     async def close(self):
         await self.db.close()
@@ -84,7 +110,7 @@ class VeniceBot(commands.Bot):
 
 async def main():
     if not Config.TOKEN or not Config.CLIENT_ID or not Config.CLIENT_SECRET:
-        raise SystemExit("Missing DISCORD_TOKEN / CLIENT_ID / CLIENT_SECRET in environment.")
+        raise SystemExit("Missing DISCORD_TOKEN / CLIENT_ID / CLIENT_SECRET.")
 
     bot = VeniceBot()
     async with bot:
