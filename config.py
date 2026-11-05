@@ -22,8 +22,13 @@ class Config:
     DB_PATH = os.getenv("DB_PATH", "data/bot.db")
     SUPPORT_SERVER = os.getenv("SUPPORT_SERVER", "")
 
+    MONGO_URI = os.getenv("MONGO_URI", "")
+    MONGO_DB = os.getenv("MONGO_DB", "syncx")
+
     DEFAULT_NORMAL_LIMIT = 10
-    MAX_QUEUE = 25
-    COOLDOWN_SECONDS = 120
+    DEFAULT_MAX_QUEUE = 25
+    DEFAULT_COOLDOWN = 120
+    DEFAULT_SAME_GUILD_COOLDOWN = 3600
+    DEFAULT_REPEAT_LIMIT = 3
 
     DISCORD_API = "https://discord.com/api/v10"
