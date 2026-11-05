@@ -7,8 +7,10 @@ from utils import brand
 USER_COMMANDS = [
     ("add <server_id> [amount]", "Add members. Omit amount to add your full limit."),
     ("limit", "Preview your remaining member limit."),
+    ("pulls", "Your recent pull history."),
     ("queue", "View the current queue."),
     ("profile", "View your authorization and usage profile."),
+    ("stats", "Bot statistics."),
     ("authorize", "Get your personal authorization link."),
     ("invite", "Get the bot invite link."),
     ("ping", "Check the bot latency."),
@@ -25,6 +27,10 @@ OWNER_COMMANDS = [
     ("set channel <#channel>", "Restrict the add command to one channel."),
     ("set verifyrole <@role>", "Set the role given on verification."),
     ("set maxqueue <amount>", "Set the queue capacity."),
+    ("set cooldown <seconds>", "Per-user cooldown."),
+    ("set sameguildcooldown <seconds>", "Same-server repeat cooldown."),
+    ("set repeatlimit <count>", "Repeats before auto-blacklist."),
+    ("set maintenance <on|off>", "Pause or resume the queue."),
     ("blacklist server <id>", "Blacklist a server."),
     ("blacklist unserver <id>", "Unblacklist a server."),
     ("blacklist user <@user>", "Blacklist a user."),
@@ -32,6 +38,10 @@ OWNER_COMMANDS = [
     ("blacklist list", "List all blacklisted servers and users."),
     ("authcount", "Show the total number of authorized users."),
     ("recheck", "Find accounts missing the guilds.join scope."),
+    ("dbstatus", "Show the active database backend."),
+    ("forcesync", "Replay pending ops to MongoDB now."),
+    ("attempts", "Recent pull attempts."),
+    ("resetattempts <@user> <server_id>", "Clear an attempt record."),
     ("synccmds", "Re-sync slash commands."),
     ("clearqueue", "Clear the queue."),
     ("resetuser <@user>", "Reset a user's usage and cooldown."),
@@ -66,7 +76,7 @@ class Help(commands.Cog):
         embed = brand(
             f"Prefix: `{Config.PREFIX}` - Slash commands work too.\n"
             "`amount` is optional - omit it to add your full limit.",
-            title="<a:error:1561396708443816099>SyncX Help Menu",
+            title="Venice Member Bot - Help",
         )
         embed.set_thumbnail(url=self.bot.user.display_avatar.url)
 
