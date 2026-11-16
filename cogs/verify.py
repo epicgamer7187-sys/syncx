@@ -29,7 +29,7 @@ class Verify(commands.Cog):
             title="<:greenlink:1561396716157014046>Verification",
         )
         embed.add_field(name="You will receive", value=role_text, inline=False)
-        embed.set_footer(text="Venice Member Bot - Secure OAuth2")
+        embed.set_footer(text="SyncX - Secure OAuth2")
 
         view = discord.ui.View()
         view.add_item(discord.ui.Button(label="Authorize", url=url, style=discord.ButtonStyle.link))
