@@ -5,7 +5,7 @@ import discord
 from discord.ext import commands
 
 from config import Config
-from store import Store
+from database import Database
 from utils import err
 from web import WebServer
 
@@ -42,7 +42,7 @@ class VeniceBot(commands.Bot):
             strip_after_prefix=True,
             allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True),
         )
-        self.db = Store(Config.DB_PATH, Config.MONGO_URI or None, Config.MONGO_DB)
+        self.db = Database(Config.DB_PATH)
         self.web = WebServer(self)
 
     async def setup_hook(self):
@@ -65,7 +65,6 @@ class VeniceBot(commands.Bot):
             log.exception("Slash command sync failed")
 
     async def on_ready(self):
-        log.info("Store mode: %s", "MongoDB" if self.db.online else "SQLite fallback")
         log.info("Logged in as %s (%s)", self.user, self.user.id)
         await self.change_presence(
             activity=discord.Activity(
