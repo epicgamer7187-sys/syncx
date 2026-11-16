@@ -22,9 +22,6 @@ class Config:
     DB_PATH = os.getenv("DB_PATH", "data/bot.db")
     SUPPORT_SERVER = os.getenv("SUPPORT_SERVER", "")
 
-    MONGO_URI = os.getenv("MONGO_URI", "")
-    MONGO_DB = os.getenv("MONGO_DB", "syncx")
-
     DEFAULT_NORMAL_LIMIT = 10
     DEFAULT_MAX_QUEUE = 25
     DEFAULT_COOLDOWN = 120
