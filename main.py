@@ -4,6 +4,7 @@ import logging
 import discord
 from discord.ext import commands
 
+import vr_presence
 from config import Config
 from database import Database
 from utils import err
@@ -44,6 +45,7 @@ class VeniceBot(commands.Bot):
         )
         self.db = Database(Config.DB_PATH)
         self.web = WebServer(self)
+        self._presence_task = None
 
     async def setup_hook(self):
         await self.db.connect()
@@ -64,14 +66,32 @@ class VeniceBot(commands.Bot):
         except Exception:
             log.exception("Slash command sync failed")
 
+        self._presence_task = asyncio.create_task(self._rotate_presence())
+
+    async def _rotate_presence(self):
+        await self.wait_until_ready()
+        if not Config.STATUSES:
+            return
+        index = 0
+        while True:
+            template = Config.STATUSES[index % len(Config.STATUSES)]
+            name = template.replace("{prefix}", Config.PREFIX).replace(
+                "{guilds}", str(len(self.guilds))
+            )
+            try:
+                await self.change_presence(
+                    activity=discord.Activity(
+                        type=discord.ActivityType.watching, name=name[:128]
+                    ),
+                    status=discord.Status.online,
+                )
+            except Exception:
+                log.exception("Presence update failed")
+            index += 1
+            await asyncio.sleep(max(15, Config.STATUS_INTERVAL))
+
     async def on_ready(self):
         log.info("Logged in as %s (%s)", self.user, self.user.id)
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching, name=f"{Config.PREFIX}help"
-            ),
-            status=discord.Status.online,
-        )
 
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.CommandNotFound):
@@ -103,6 +123,8 @@ class VeniceBot(commands.Bot):
             pass
 
     async def close(self):
+        if self._presence_task:
+            self._presence_task.cancel()
         await self.db.close()
         await super().close()
 
@@ -110,6 +132,8 @@ class VeniceBot(commands.Bot):
 async def main():
     if not Config.TOKEN or not Config.CLIENT_ID or not Config.CLIENT_SECRET:
         raise SystemExit("Missing DISCORD_TOKEN / CLIENT_ID / CLIENT_SECRET.")
+
+    vr_presence.install()
 
     bot = VeniceBot()
     async with bot:
