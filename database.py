@@ -5,6 +5,8 @@ import uuid
 
 import aiosqlite
 
+BACKUP_VERSION = 1
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS oauth_users (
     user_id INTEGER PRIMARY KEY, username TEXT, access_token TEXT,
@@ -31,14 +33,26 @@ CREATE TABLE IF NOT EXISTS pulls (
     user_id INTEGER, guild_id INTEGER, count INTEGER DEFAULT 0,
     last_pull INTEGER DEFAULT 0, PRIMARY KEY (user_id, guild_id)
 );
-CREATE TABLE IF NOT EXISTS pending_ops (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, op TEXT,
-    payload TEXT, created_at INTEGER
-);
 """
 
+TABLES = {
+    "oauth_users": ["user_id", "username", "access_token", "refresh_token",
+                    "expires_at", "authorized", "scope", "created_at"],
+    "settings": ["key", "value"],
+    "role_limits": ["role_id", "amount"],
+    "blacklist_servers": ["server_id"],
+    "blacklist_users": ["user_id"],
+    "usage": ["user_id", "used", "cooldown"],
+    "queue": ["id", "key", "user_id", "source_guild_id", "guild_id",
+              "channel_id", "amount", "created_at"],
+    "verified": ["guild_id", "user_id", "verified_at"],
+    "pulls": ["user_id", "guild_id", "count", "last_pull"],
+}
 
-class SqliteBackend:
+
+class Database:
+    online = True  # compatibility shim
+
     def __init__(self, path):
         self.path = path
         self.conn = None
@@ -50,42 +64,11 @@ class SqliteBackend:
         self.conn = await aiosqlite.connect(self.path)
         self.conn.row_factory = aiosqlite.Row
         await self.conn.executescript(SCHEMA)
-        await self._migrate()
-        await self.conn.commit()
-
-    async def _migrate(self):
-        cur = await self.conn.execute("PRAGMA table_info(oauth_users)")
-        cols = {r["name"] for r in await cur.fetchall()}
-        if "scope" not in cols:
-            await self.conn.execute("ALTER TABLE oauth_users ADD COLUMN scope TEXT DEFAULT ''")
         await self.conn.commit()
 
     async def close(self):
         if self.conn:
             await self.conn.close()
-
-    # ---------------- journal ----------------
-    async def log_op(self, collection, op, payload):
-        await self.conn.execute(
-            "INSERT INTO pending_ops (collection, op, payload, created_at) VALUES (?, ?, ?, ?)",
-            (collection, op, json.dumps(payload), int(time.time())),
-        )
-        await self.conn.commit()
-
-    async def pending_ops(self):
-        cur = await self.conn.execute("SELECT * FROM pending_ops ORDER BY id ASC")
-        return await cur.fetchall()
-
-    async def pending_count(self):
-        cur = await self.conn.execute("SELECT COUNT(*) AS c FROM pending_ops")
-        return (await cur.fetchone())["c"]
-
-    async def clear_pending(self, ids):
-        if not ids:
-            return
-        marks = ",".join("?" * len(ids))
-        await self.conn.execute(f"DELETE FROM pending_ops WHERE id IN ({marks})", ids)
-        await self.conn.commit()
 
     # ---------------- settings ----------------
     async def get_setting(self, key, default=None):
@@ -99,6 +82,13 @@ class SqliteBackend:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(value))
         )
         await self.conn.commit()
+
+    async def get_setting_int(self, key, default=0):
+        value = await self.get_setting(key)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     # ---------------- role limits ----------------
     async def get_role_limits(self):
@@ -299,7 +289,51 @@ class SqliteBackend:
         await self.conn.commit()
 
     async def list_pulls(self, limit=20):
-        cur = await self.conn.execute(
-            "SELECT * FROM pulls ORDER BY last_pull DESC LIMIT ?", (limit,)
-        )
+        cur = await self.conn.execute("SELECT * FROM pulls ORDER BY last_pull DESC LIMIT ?", (limit,))
         return await cur.fetchall()
+
+    # ---------------- backup ----------------
+    async def table_counts(self):
+        counts = {}
+        for table in TABLES:
+            cur = await self.conn.execute(f"SELECT COUNT(*) AS c FROM {table}")
+            counts[table] = (await cur.fetchone())["c"]
+        return counts
+
+    async def export_all(self):
+        payload = {
+            "version": BACKUP_VERSION,
+            "created_at": int(time.time()),
+            "tables": {},
+        }
+        for table in TABLES:
+            cur = await self.conn.execute(f"SELECT * FROM {table}")
+            payload["tables"][table] = [dict(r) for r in await cur.fetchall()]
+        return payload
+
+    async def import_all(self, payload):
+        version = payload.get("version")
+        if version != BACKUP_VERSION:
+            raise ValueError(f"Unsupported backup version {version}, expected {BACKUP_VERSION}.")
+
+        tables = payload.get("tables")
+        if not isinstance(tables, dict):
+            raise ValueError("Backup has no `tables` object.")
+
+        await self.conn.execute("BEGIN")
+        try:
+            for table, columns in TABLES.items():
+                await self.conn.execute(f"DELETE FROM {table}")
+                rows = tables.get(table) or []
+                if not rows:
+                    continue
+                marks = ",".join("?" * len(columns))
+                sql = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({marks})"
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    await self.conn.execute(sql, [row.get(c) for c in columns])
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
